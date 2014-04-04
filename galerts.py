@@ -23,7 +23,7 @@
 
 import re
 import urllib2
-from BeautifulSoup import BeautifulSoup
+import lxml.html
 from getpass import getpass
 from urllib import urlencode
 
@@ -354,9 +354,7 @@ class GAlertsManager(object):
                 response.info().headers,
                 body,
                 )
-        soup = BeautifulSoup(body)
-        sig = soup.findChild('input', attrs={'name': 'x'})['value']
-        return str(sig)
+        return lxml.html.fromstring(body).xpath('//input[@name="x"]')[0].value
 
     def _scrape_sig_es_hps(self, alert):
         """
@@ -374,63 +372,42 @@ class GAlertsManager(object):
                 response.info().headers,
                 body,
                 )
-        soup = BeautifulSoup(body)
-        sig = soup.findChild('input', attrs={'name': 'x'})['value']
-        es = soup.findChild('input', attrs={'name': 'es'})['value']
-        hps = soup.findChild('input', attrs={'name': 'hps'})['value']
-        return tuple(str(i) for i in (sig, es, hps))
+        root = lxml.html.fromstring(body)
+        sig = root.xpath('//input[@name="x"]')[0].value
+        es = root.xpath('//input[@name="es"]')[0].value
+        # hps = soup.findChild('input', attrs={'name': 'hps'})['value']
+        return tuple(str(i) for i in (sig, es))
 
     @property
     def alerts(self):
-        """
-        Queries Google on every access for the alerts associated with this
-        account, wraps them in :class:`Alert` objects, and returns a generator
-        you can use to iterate over them.
-        """
         alerts_url = 'http://www.google.com/alerts/manage?hl=en&gl=us'
         response = self.opener.open(alerts_url)
         resp_code = response.getcode()
         body = response.read()
         if resp_code != 200:
             raise UnexpectedResponseError(resp_code, [], body)
-
-        soup = BeautifulSoup(body, convertEntities=BeautifulSoup.HTML_ENTITIES)
-        trs = soup.findAll('tr', attrs={'class': 'ACTIVE'})
+        root = lxml.html.fromstring(body)
+        trs = root.xpath('//tr[@class="ACTIVE"]')
         for tr in trs:
-            tds = tr.findAll('td')
-            # annoyingly, if you have no alerts, Google tells you this in
-            # a <tr> with class "data_row" in a single <td>
-            if len(tds) < 6:
-                # we continue rather than break because there could be
-                # subsequent iterations for other email addresses associated
-                # with this account which do have alerts
-                continue
-            tdcheckbox = tds[0]
-            tdquery = tds[1]
-            tdvol = tds[2]
-            tdfreq = tds[3]
-            tddeliver = tds[4]
-            tdtype = tds[5]
+            xs = tr.xpath('td[1]/input')[0].attrib['value']
+            query = tr.xpath('td[2]/a')[0].text
+            lang = tr.xpath('td[3]')[0].text    # 'English'
+            vol = tr.xpath('td[4]')[0].text # 'Only the best results'
+            freq = tr.xpath('td[5]')[0].text # 'As-it-happens'
+            tddeliver = tr.xpath('td[6]')[0]
 
-            s = tdcheckbox.findChild('input')['value']
-            s = str(s)
-            query = tdquery.findChild('a').next
-            query = unicode(query)
-            freq = tdfreq.next
-            freq = str(freq)
-            vol = tdvol.next
-            vol = str(vol)
-
-            if not tddeliver.findAll('a'):
-                feedurl = None
+            a_lst = tddeliver.xpath('a')
+            feed_url, email = None, None
+            if len(a_lst) > 0: # feed
+                feed_url = a_lst[0].attrib['href']
                 deliver = DELIVER_EMAIL # normalize
-            else: # deliver is an anchor tag
-                feedurl = tddeliver.findAll('a')[1]['href']
-                feedurl = str(feedurl)
+            else: # email
+                email = tddeliver.text
                 deliver = DELIVER_FEED
-            email = self.email # scrape out of html if and when we support accounts with multiple addresses
+
+            # print s, query, lang, vol, freq
             type = TYPE_EVERYTHING
-            yield Alert(email, s, query, type, freq, vol, deliver, feedurl=feedurl)
+            yield Alert(email or self.email, xs, query, type, freq, vol, deliver, feedurl=feed_url)
 
     def create(self, query, type, feed=True, freq=FREQ_ONCE_A_DAY,
             vol=VOL_ONLY_BEST):
@@ -468,12 +445,11 @@ class GAlertsManager(object):
         Updates an existing alert which has been modified.
         """
         url = 'http://www.google.com/alerts/save?hl=en&gl=us'
-        sig, es, hps = self._scrape_sig_es_hps(alert)
+        sig, es = self._scrape_sig_es_hps(alert)
         params = {
             'd': DELIVER_TYPES.get(alert.deliver, DELIVER_DEFAULT_VAL),
             'e': self.email,
             'es': es,
-            'hps': hps,
             'q': alert.query,
             'se': 'Save',
             'x': sig,

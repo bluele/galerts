@@ -44,6 +44,6 @@ setup(
         "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
         ],
     install_requires=[
-        "BeautifulSoup",
+        "lxml",
         ],
     )
